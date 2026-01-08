@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Рисование жестами руки</title>
+
+  <!-- MediaPipe -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      background: #0f0f0f;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+
+    .container {
+      position: relative;
+      width: 640px;
+      height: 480px;
+    }
+
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    .hint {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      padding: 6px 10px;
+      font-size: 13px;
+      border-radius: 6px;
+      font-family: sans-serif;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <video id="video" width="640" height="480" autoplay playsinline></video>
+  <canvas id="overlay" width="640" height="480"></canvas>
+  <canvas id="draw" width="640" height="480"></canvas>
+  <div class="hint">Щипок — рисование | 2–4 пальца — цвет | Кулак — очистка</div>
+</div>
+
+<script>
+const video = document.getElementById("video");
+const overlay = document.getElementById("overlay");
+const drawCanvas = document.getElementById("draw");
+
+const octx = overlay.getContext("2d");
+const dctx = drawCanvas.getContext("2d");
+
+let drawing = false;
+let lastPoint = null;
+let currentColor = "red";
+
+// smoothing
+const SMOOTHING = 0.7;
+let smoothX = null;
+let smoothY = null;
+
+// --- MediaPipe Hands ---
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.7
+});
+
+hands.onResults(onResults);
+
+// --- Camera ---
+const camera = new Camera(video, {
+  onFrame: async () => {
+    await hands.send({ image: video });
+  },
+  width: 640,
+  height: 480
+});
+camera.start();
+
+// --- Utils ---
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function isFingerUp(landmarks, tip, pip) {
+  return landmarks[tip].y < landmarks[pip].y;
+}
+
+// --- Gesture detection ---
+function detectGesture(landmarks) {
+  const fingers = {
+    index: isFingerUp(landmarks, 8, 6),
+    middle: isFingerUp(landmarks, 12, 10),
+    ring: isFingerUp(landmarks, 16, 14),
+    pinky: isFingerUp(landmarks, 20, 18)
+  };
+
+  const upCount = Object.values(fingers).filter(v => v).length;
+
+  if (upCount === 0) return "fist";
+  if (upCount === 2) return "red";
+  if (upCount === 3) return "green";
+  if (upCount === 4) return "blue";
+
+  return null;
+}
+
+// --- Main loop ---
+function onResults(results) {
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+
+  if (!results.multiHandLandmarks.length) return;
+
+  const lm = results.multiHandLandmarks[0];
+
+  // Draw skeleton
+  drawConnectors(octx, lm, HAND_CONNECTIONS, { color: "#00ffcc", lineWidth: 2 });
+  drawLandmarks(octx, lm, { color: "#ffcc00", radius: 3 });
+
+  // Gestures
+  const gesture = detectGesture(lm);
+  if (gesture === "red") currentColor = "red";
+  if (gesture === "green") currentColor = "green";
+  if (gesture === "blue") currentColor = "blue";
+  if (gesture === "fist") {
+    dctx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+  }
+
+  // Pinch detection
+  const thumb = lm[4];
+  const index = lm[8];
+
+  const pinch = dist(thumb, index) < 0.05;
+
+  const x = index.x * drawCanvas.width;
+  const y = index.y * drawCanvas.height;
+
+  // smoothing
+  smoothX = smoothX === null ? x : smoothX * SMOOTHING + x * (1 - SMOOTHING);
+  smoothY = smoothY === null ? y : smoothY * SMOOTHING + y * (1 - SMOOTHING);
+
+  if (pinch) {
+    if (!drawing) {
+      drawing = true;
+      lastPoint = { x: smoothX, y: smoothY };
+    } else {
+      dctx.strokeStyle = currentColor;
+      dctx.lineWidth = 4;
+      dctx.lineCap = "round";
+
+      dctx.beginPath();
+      dctx.moveTo(lastPoint.x, lastPoint.y);
+      dctx.lineTo(smoothX, smoothY);
+      dctx.stroke();
+
+      lastPoint = { x: smoothX, y: smoothY };
+    }
+  } else {
+    drawing = false;
+    lastPoint = null;
+  }
+}
+</script>
+
+</body>
+</html>
